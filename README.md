@@ -104,9 +104,9 @@ monitors:
 
 # Telegraf Available Fields by Measurement
 
-Below is a parsed breakdown of the metrics from your `--test` output, grouped by **measurement** (the first word before the comma). For each measurement, I list all available **fields** that can be used in `fieldpass` or your Go parsing code.
+Below is a breakdown of some Telegraf metrics. For a full list of available Telegraf metrics, see [Telegraf Input Plugins](https://docs.influxdata.com/telegraf/v1/plugins/inputs/).
 
-These are the exact field names Telegraf emits on your system.
+_Note: only a few metrics have been tested. If you require additional configurations, please raise a GitHub Issue._
 
 ### `cpu` (CPU Usage — multiple series: per-core + `cpu-total`)
 
