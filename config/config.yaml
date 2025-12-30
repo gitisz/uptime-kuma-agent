@@ -1,0 +1,20 @@
+# Limited Config for Local Testing
+uptime_kuma_url: http://10.10.0.50:3001
+username: administrator
+password: <PASSWORD>
+group_name: test Monitors
+interval: 60
+max_retries: 1
+agent:
+  docker_image: "<Docker-registry>/uptime-kuma-agent:latest"
+  use_outputs_discard: true
+monitors:
+    - type: push
+      name: test - CPU %
+      push_token: AAA
+    - type: push
+      name: test - RAM %
+      push_token: BBB
+    - type: push
+      name: test - Root Disk %
+      push_token: CCC

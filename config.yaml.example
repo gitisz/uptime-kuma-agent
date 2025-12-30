@@ -1,0 +1,71 @@
+uptime_kuma_url: "https://uptime.iszland.com"
+username: "<user>"
+password: "<password>"  # Better: use API key if enabled
+
+group_name: "{{ .HostName }} Monitors"  # Template with VM hostname
+group_description: "System metrics for host {{ .HostName }}"
+group_notification_names:
+  - "Gmail Notification"
+  - "Discord Webhook"
+interval: 60
+max_retries: 1
+
+# Global agent behavior
+agent:
+  use_outputs_discard: true   # When true: adds [[outputs.discard]] to each drop-in
+                              #             so Telegraf starts even with only execd
+                              # When false: no dummy output — use when you have real outputs
+                              #             elsewhere (e.g., InfluxDB, Prometheus)
+  docker_image: "<docker-registry>/uptime-kuma-agent:latest" # Registry for the Docker image
+
+monitors:
+  - type: push
+    name: "{{ .HostName }} - CPU %"
+    threshold: 90
+    metric: cpu
+    field: usage_user
+    threshold: 90
+
+  # RAM - used_percent from mem input
+  - type: push
+    name: "{{ .HostName }} - RAM %"
+    threshold: 90
+    metric: mem
+    field: used_percent
+
+  # Root Disk - disk input, filter by filesystem path
+  - type: push
+    name: "{{ .HostName }} - Root Disk %"
+    threshold: 85
+    metric: disk
+    field: used_percent
+    filesystem: "/"
+
+  # Data Disk - custom mount point
+  - type: push
+    name: "{{ .HostName }} - Data Disk %"
+    threshold: 85
+    metric: disk
+    field: used_percent
+    filesystem: "/mnt/data/uptime-kuma-test"
+
+  # HTTP health check (no metric mapping needed)
+  - type: http
+    name: "{{ .HostName }} - Web"
+    url: "http://<local-service>/health"
+
+  # Docker CPU
+  - type: push
+    name: "Docker CPU %"
+    threshold: 90
+    metric: docker_container_cpu
+    field: usage_percent
+    container_name: "uptime-kuma-test"
+
+  # Docker Mem
+  - type: push
+    name: "Docker Mem %"
+    threshold: 90
+    metric: docker_container_mem
+    field: usage_percent
+    container_name: "uptime-kuma-test"
