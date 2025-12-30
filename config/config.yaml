@@ -1,5 +1,5 @@
 # Limited Config for Local Testing
-uptime_kuma_url: http://10.10.0.50:3001
+uptime_kuma_url: http://<replace-with-uptime-kuma-fqdn>
 username: administrator
 password: <PASSWORD>
 group_name: test Monitors

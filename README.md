@@ -50,7 +50,7 @@ Edit `config/config.yaml` (from [`config.yaml.example`](./config.yaml.example)).
 Example:
 
 ```yaml
-uptime_kuma_url: "https://uptime.iszland.com"
+uptime_kuma_url: "https://<your-uptime-kuma-fqdn>"
 username: "administrator"
 password: "your_password_or_api_key"  # Better: use API key if enabled
 
