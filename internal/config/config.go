@@ -10,9 +10,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type LoggingConfig struct {
+	Level      string `yaml:"level,omitempty"`       // debug, info, warn, error
+	Format     string `yaml:"format,omitempty"`      // text, json
+	File       string `yaml:"file,omitempty"`        // file path for logging
+	MaxSize    int    `yaml:"max_size,omitempty"`    // max size in MB before rotation
+	MaxAge     int    `yaml:"max_age,omitempty"`     // max age in days
+	MaxBackups int    `yaml:"max_backups,omitempty"` // max number of backup files
+	Compress   *bool  `yaml:"compress,omitempty"`    // compress rotated files
+}
+
 type AgentConfig struct {
-	UseOutputsDiscard *bool  `yaml:"use_outputs_discard,omitempty"`
-	DockerImage       string `yaml:"docker_image"`
+	UseOutputsDiscard *bool         `yaml:"use_outputs_discard,omitempty"`
+	DockerImage       string        `yaml:"docker_image"`
+	Logging           LoggingConfig `yaml:"logging,omitempty"`
 }
 
 type Config struct {

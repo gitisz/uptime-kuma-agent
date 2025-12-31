@@ -10,6 +10,7 @@ import (
 
 	kuma "github.com/breml/go-uptime-kuma-client"
 	"github.com/gitisz/uptime-kuma-agent/internal/config"
+	"github.com/gitisz/uptime-kuma-agent/internal/logging"
 	"github.com/gitisz/uptime-kuma-agent/internal/provision"
 	"github.com/gitisz/uptime-kuma-agent/internal/telegraf"
 	"github.com/spf13/cobra"
@@ -52,6 +53,11 @@ func run() error {
 		return err
 	}
 
+	// Initialize logger
+	if err := logging.InitLogger(&cfg.Agent.Logging); err != nil {
+		return fmt.Errorf("failed to initialize logger: %w", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -59,16 +65,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
-	log.Println("Client created successfully")
+	logging.Info("Client created successfully")
 	defer client.Disconnect()
 
 	if err := provision.ProvisionKumaMonitor(ctx, client, cfg); err != nil {
 		return err
 	}
-	log.Println("Provisioning completed successfully")
+	logging.Info("Provisioning completed successfully")
 
 	if withTelegraf {
-		log.Printf("withTelegraf flag: %t - generating configs", withTelegraf)
+		logging.Infof("withTelegraf flag: %t - generating configs", withTelegraf)
 		if err := telegraf.GenerateTelegrafConfigs(cfg, telegrafDir); err != nil {
 			return err
 		}

@@ -18,6 +18,16 @@ agent:
                               #             elsewhere (e.g., InfluxDB, Prometheus)
   docker_image: "<docker-registry>/uptime-kuma-agent:latest" # Registry for the Docker image
 
+  # Logging configuration
+  logging:
+    level: "info"                    # debug, info, warn, error
+    format: "text"                   # text, json
+    file: "/var/log/uptime-kuma-agent/app.log"  # Leave empty for stdout
+    max_size: 10                     # Max size in MB before rotation
+    max_age: 30                      # Max age in days
+    max_backups: 5                   # Max number of backup files
+    compress: true                   # Compress rotated files
+
 monitors:
   - type: push
     name: "{{ .HostName }} - CPU %"

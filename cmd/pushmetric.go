@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gitisz/uptime-kuma-agent/internal/config"
+	"github.com/gitisz/uptime-kuma-agent/internal/logging"
 	"github.com/spf13/cobra"
 )
 
@@ -24,22 +24,22 @@ var pushMetricCmd = &cobra.Command{
 		token := cmd.Flag("token").Value.String()
 
 		if monitorName == "" || token == "" {
-			log.Fatalf("Missing required flags: monitor=%q token=%q", monitorName, token)
+			logging.Fatalf("Missing required flags: monitor=%q token=%q", monitorName, token)
 		}
 
-		log.Printf("=== push-metric STARTED (outputs.exec mode) ===")
-		log.Printf("Monitor: %s", monitorName)
-		log.Printf("Token: %s", token)
-		log.Printf("Config path: %s", configPath)
+		logging.Info("=== push-metric STARTED (outputs.exec mode) ===")
+		logging.Infof("Monitor: %s", monitorName)
+		logging.Infof("Token: %s", token)
+		logging.Infof("Config path: %s", configPath)
 
 		// Load full config
 		cfg, err := config.LoadMergedConfig(filepath.Dir(configPath))
 		if err != nil {
-			log.Fatalf("Failed to load merged config: %v", err)
+			logging.Fatalf("Failed to load merged config: %v", err)
 		}
 
 		pushURL := fmt.Sprintf("%s/api/push/%s", strings.TrimSuffix(cfg.UptimeKumaURL, "/"), token)
-		log.Printf("Push URL: %s", pushURL)
+		logging.Infof("Push URL: %s", pushURL)
 
 		// Find threshold and field from config.yaml (single lookup)
 		threshold := 90.0
@@ -59,11 +59,11 @@ var pushMetricCmd = &cobra.Command{
 
 		// Enforce that field is defined
 		if expectedField == "" {
-			log.Fatalf("CRITICAL: No 'field' defined for monitor %q in config.yaml", monitorName)
+			logging.Fatalf("CRITICAL: No 'field' defined for monitor %q in config.yaml", monitorName)
 		}
 
-		log.Printf("Threshold from config.yaml: %.1f", threshold)
-		log.Printf("Expecting field: %s", expectedField)
+		logging.Infof("Threshold from config.yaml: %.1f", threshold)
+		logging.Infof("Expecting field: %s", expectedField)
 		// READ ALL FROM STDIN
 		var value float64
 		found := false
@@ -75,7 +75,7 @@ var pushMetricCmd = &cobra.Command{
 			line := scanner.Text()
 			lineCount++
 			receivedLines = append(receivedLines, line)
-			log.Printf("STDIN line %d: %s", lineCount, line)
+			logging.Debugf("STDIN line %d: %s", lineCount, line)
 
 			// Robust parsing: find field even if surrounded by tags or other fields
 			if strings.Contains(line, expectedField+"=") {
@@ -96,30 +96,30 @@ var pushMetricCmd = &cobra.Command{
 				if v, err := strconv.ParseFloat(valStr, 64); err == nil {
 					value = v
 					found = true
-					log.Printf("PARSED %.6f from field '%s' (raw value: %q)", value, expectedField, valStr)
+					logging.Debugf("PARSED %.6f from field '%s' (raw value: %q)", value, expectedField, valStr)
 				} else {
-					log.Printf("PARSE FAILED for field '%s': raw value %q → error: %v", expectedField, valStr, err)
+					logging.Errorf("PARSE FAILED for field '%s': raw value %q → error: %v", expectedField, valStr, err)
 				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
-			log.Printf("Error reading STDIN: %v", err)
+			logging.Errorf("Error reading STDIN: %v", err)
 			os.Exit(1)
 		}
 
-		log.Printf("Total lines read from STDIN: %d | Found matching field: %v", lineCount, found)
+		logging.Infof("Total lines read from STDIN: %d | Found matching field: %v", lineCount, found)
 
 		if lineCount == 0 {
-			log.Printf("CRITICAL: NO DATA RECEIVED ON STDIN — Telegraf sent nothing!")
+			logging.Errorf("CRITICAL: NO DATA RECEIVED ON STDIN — Telegraf sent nothing!")
 			os.Exit(1)
 		}
 
 		if !found {
-			log.Printf("FAILED: Expected field '%s=' not found in any line", expectedField)
-			log.Printf("Received %d line(s):", lineCount)
+			logging.Errorf("FAILED: Expected field '%s=' not found in any line", expectedField)
+			logging.Errorf("Received %d line(s):", lineCount)
 			for i, l := range receivedLines {
-				log.Printf("  Line %d: %s", i+1, l)
+				logging.Errorf("  Line %d: %s", i+1, l)
 			}
 			os.Exit(1)
 		}
@@ -133,23 +133,23 @@ var pushMetricCmd = &cobra.Command{
 		// Build message and URL
 		msg := fmt.Sprintf("%s: %.2f%% (threshold %.0f%%)", monitorName, value, threshold)
 		fullURL := fmt.Sprintf("%s?status=%s&ping=%.2f&msg=%s", pushURL, status, value, url.QueryEscape(msg))
-		log.Printf("Final push URL: %s", fullURL)
+		logging.Infof("Final push URL: %s", fullURL)
 
 		// Perform HTTP push
 		resp, err := http.Get(fullURL)
 		if err != nil {
-			log.Printf("HTTP request failed: %v", err)
+			logging.Errorf("HTTP request failed: %v", err)
 			os.Exit(1)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
 			body, _ := io.ReadAll(resp.Body)
-			log.Printf("Push failed: %d %s", resp.StatusCode, string(body))
+			logging.Errorf("Push failed: %d %s", resp.StatusCode, string(body))
 			os.Exit(1)
 		}
 
-		log.Printf("PUSH SUCCESS: %s → %.1f%% (%s)", monitorName, value, status)
+		logging.Infof("PUSH SUCCESS: %s → %.1f%% (%s)", monitorName, value, status)
 		os.Exit(0)
 	},
 }

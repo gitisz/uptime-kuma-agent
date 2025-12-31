@@ -16,6 +16,9 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/maldikhan/go.socket.io v0.1.1 // indirect
 	github.com/maniartech/signals v1.3.1 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/sys v0.31.0 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
