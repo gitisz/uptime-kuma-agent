@@ -1,0 +1,24 @@
+[[outputs.exec]]
+  command = [
+    "docker",
+    "run",
+    "--rm",
+    "-i",
+    "-v", "/etc/uptime-kuma-agent:/config:ro",
+    "-v", "/var/log:/var/log",
+    "{{.DockerImage}}",
+    "push-metric",
+    "--monitor", "{{.MonitorName}}",
+    "--token", "{{.Token}}"
+  ]
+
+  namepass = ["{{.Metric}}"]
+  fieldpass = ["{{.Field}}"]
+{{if .Filesystem}}
+  [outputs.exec.tagpass]
+    path = ["{{.Filesystem}}"]
+{{end}}
+{{if .ContainerName}}
+  [[outputs.exec.tagpass]]
+    container_name = ["{{.ContainerName}}"]
+{{end}}
