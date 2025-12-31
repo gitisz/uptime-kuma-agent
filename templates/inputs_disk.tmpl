@@ -1,4 +1,0 @@
-[[inputs.disk]]
-  interval = "30s"
-  ignore_fs = ["tmpfs", "devtmpfs", "devfs", "iso9660", "overlay", "squashfs"]
-  mount_points = [{{ range $i, $mp := .MountPoints }}{{ if $i }}, {{ end }}{{ printf "%q" $mp }}{{ end }}]
