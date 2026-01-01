@@ -1,0 +1,80 @@
+write_files:
+
+  # Uptime Kuma agent config — uses variables from service_vars
+  - path: /etc/uptime-kuma-agent/config.yaml
+    permissions: '0644'
+    owner: root:root
+    content: |
+      # Version for config schema
+      version: 1.0
+
+      uptime_kuma_url: "${uptime_kuma_url}"
+      username: "${uptime_kuma_username}"
+      password: "${uptime_kuma_password}"
+
+      interval: 60
+      max_retries: 1
+
+      # Global agent behavior
+      agent:
+        use_outputs_discard: true
+        docker_image: "${uptime_kuma_agent_image}"
+        logging:
+          level: "info"                                         # debug, info, warn, error
+          format: "text"                                        # text, json
+          internal_log_directory: "/app-logs"                   # Internal directory for logs and Docker volume mounts
+          host_log_directory: "/var/log/uptime-kuma-agent"      # Host directory for Docker volume mounts
+          max_size: 10                                          # Max size in MB before rotation
+          max_age: 30                                           # Max age in days
+          max_backups: 5                                        # Max number of backup files
+          compress: true                                        # Compress rotated files
+          socketio_log_level: "warn"                            # Socket.IO client log level: debug, info, warn, error, off
+
+      # Global thresholds for metrics (can be overridden per-monitor)
+      global_thresholds:
+        cpu: 90
+        ram: 90
+        disk: 85
+
+      # Group definitions, for which monitors will specify which to belong to
+      groups:
+        - name: "${host_name} Monitors"
+          description: "System metrics for host ${host_name}"
+          notification_names:
+            - "Outlook Notification"
+
+      # Push monitor definitions
+      push_monitors:
+
+        # CPU - usage_user from cpu input
+        - name: "CPU %"
+          group: "${host_name} Monitors"
+          threshold: 90
+          metric: cpu
+          field: usage_user
+
+        # RAM - used_percent from mem input
+        - name: "RAM %"
+          group: "${host_name} Monitors"
+          threshold: 90
+          metric: mem
+          field: used_percent
+
+        # Root Disk - disk input, filter by filesystem path
+        - name: "Root Disk %"
+          group: "${host_name} Monitors"
+          threshold: 85
+          metric: disk
+          field: used_percent
+          filesystem: "/"
+
+      # HTTP monitor definitions
+      http_monitors:
+
+        # Simple web service health check
+        - name: "${host_name} Web"
+          group: "${host_name} Monitors"
+          url: "http://<local-service>/health"
+
+      # Add more monitors from your project.tftpl (data disk, docker containers, etc.)
+      # using a different name `path: /etc/uptime-kuma-agent/${host_name}-config.yaml` if needed, as they will be merged.

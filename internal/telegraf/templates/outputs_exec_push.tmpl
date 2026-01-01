@@ -5,10 +5,11 @@
     "--rm",
     "-i",
     "-v", "/etc/uptime-kuma-agent:/config:ro",
-    "-v", "/var/log:/var/log",
+    "-v", "{{.HostLogDirectory}}:{{.InternalLogDirectory}}",
     "{{.DockerImage}}",
     "push-metric",
     "--monitor", "{{.MonitorName}}",
+    "--group", "{{.Group}}",
     "--token", "{{.Token}}"
   ]
 

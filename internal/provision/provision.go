@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"reflect"
 	"regexp"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	kuma "github.com/breml/go-uptime-kuma-client"
 	"github.com/breml/go-uptime-kuma-client/monitor"
 	"github.com/gitisz/uptime-kuma-agent/internal/config"
+	"github.com/gitisz/uptime-kuma-agent/internal/logging"
 )
 
 var invalidChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
@@ -76,7 +76,7 @@ func ResolveNotificationIDs(ctx context.Context, client *kuma.Client, names []st
 	}
 
 	if len(missing) > 0 {
-		log.Printf("Warning: notification names not found: %v", missing)
+		logging.Warnf("Warning: notification names not found: %v", missing)
 	}
 
 	return ids, nil
@@ -149,117 +149,150 @@ func UpdateMonitorBase(ctx context.Context, client *kuma.Client, monID int64, mc
 		}
 
 	default:
-		log.Printf("Skipping update for monitor type %s (not supported yet)", mcfg.Type)
+		logging.Warnf("Skipping update for monitor type %s (not supported yet)", mcfg.Type)
 		return nil
 	}
 
 	if updated {
-		log.Printf("Updated monitor %s (description/notifications)", mcfg.Name)
+		logging.Infof("Updated monitor %s (description/notifications)", mcfg.Name)
 	}
 
 	return nil
 }
 
 func ProvisionKumaMonitor(ctx context.Context, client *kuma.Client, cfg *config.Config) error {
-	log.Println("Starting provisioning...")
+	logging.Info("Starting provisioning...")
 
 	monitors, err := client.GetMonitors(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get monitors: %w", err)
 	}
 
-	existingByName := make(map[string]monitor.Base)
+	// Build lookup maps for existing monitors
+	existingByName := make(map[string]monitor.Base)         // For monitors without groups
+	existingByNameAndGroup := make(map[string]monitor.Base) // For monitors with groups: "name|groupID"
+
 	for _, m := range monitors {
 		existingByName[m.Name] = m
-	}
-	log.Printf("Found %d existing monitors", len(existingByName))
 
-	groupNotificationIDs := []int64{}
-	if len(cfg.GroupNotificationNames) > 0 {
-		ids, err := ResolveNotificationIDs(ctx, client, cfg.GroupNotificationNames)
-		if err != nil {
-			return err
-		}
-		groupNotificationIDs = ids
-	}
-
-	// Create or update group
-	var groupID int64
-	if groupMon, exists := existingByName[cfg.GroupName]; exists {
-		groupID = groupMon.GetID()
-		log.Printf("Group exists: %s (ID: %d)", cfg.GroupName, groupID)
-
-		// === UPDATE EXISTING GROUP ===
-		var currentGroup monitor.Group
-		if err := client.GetMonitorAs(ctx, groupID, &currentGroup); err != nil {
-			log.Printf("Warning: failed to fetch group %s for update: %v", cfg.GroupName, err)
+		// Also index by name + group for grouped monitors
+		groupKey := ""
+		if m.Parent != nil {
+			groupKey = fmt.Sprintf("%s|%d", m.Name, *m.Parent)
 		} else {
-			updated := false
+			groupKey = fmt.Sprintf("%s|", m.Name) // Empty group
+		}
+		existingByNameAndGroup[groupKey] = m
+	}
+	logging.Infof("Found %d existing monitors", len(existingByName))
 
-			// Update description if different
-			if (currentGroup.Base.Description == nil && cfg.GroupDescription != nil) ||
-				(currentGroup.Base.Description != nil && cfg.GroupDescription != nil && *currentGroup.Base.Description != *cfg.GroupDescription) ||
-				(currentGroup.Base.Description != nil && cfg.GroupDescription == nil) {
-				currentGroup.Base.Description = cfg.GroupDescription
-				updated = true
+	// Create/update all groups and build groupName -> ID map
+	groupNameToID := make(map[string]int64)
+	for _, gcfg := range cfg.Groups {
+		// Resolve group notification IDs
+		groupNotificationIDs := []int64{}
+		if len(gcfg.NotificationNames) > 0 {
+			ids, err := ResolveNotificationIDs(ctx, client, gcfg.NotificationNames)
+			if err != nil {
+				return fmt.Errorf("resolve notifications for group %s: %w", gcfg.Name, err)
 			}
+			groupNotificationIDs = ids
+		}
 
-			// Update notifications if different
-			if !reflect.DeepEqual(currentGroup.Base.NotificationIDs, groupNotificationIDs) {
-				currentGroup.Base.NotificationIDs = groupNotificationIDs
-				updated = true
-			}
+		// Check if group exists
+		if groupMon, exists := existingByName[gcfg.Name]; exists {
+			groupID := groupMon.GetID()
+			groupNameToID[gcfg.Name] = groupID
+			logging.Infof("Group exists: %s (ID: %d)", gcfg.Name, groupID)
 
-			if updated {
-				if err := client.UpdateMonitor(ctx, &currentGroup); err != nil {
-					log.Printf("Warning: failed to update group %s: %v", cfg.GroupName, err)
-				} else {
-					log.Printf("Updated group %s (description/notifications)", cfg.GroupName)
+			// Update existing group
+			var currentGroup monitor.Group
+			if err := client.GetMonitorAs(ctx, groupID, &currentGroup); err == nil {
+				updated := false
+				if (currentGroup.Base.Description == nil && gcfg.Description != nil) ||
+					(currentGroup.Base.Description != nil && gcfg.Description != nil && *currentGroup.Base.Description != *gcfg.Description) ||
+					(currentGroup.Base.Description != nil && gcfg.Description == nil) {
+					currentGroup.Base.Description = gcfg.Description
+					updated = true
+				}
+				if !reflect.DeepEqual(currentGroup.Base.NotificationIDs, groupNotificationIDs) {
+					currentGroup.Base.NotificationIDs = groupNotificationIDs
+					updated = true
+				}
+				if updated {
+					if err := client.UpdateMonitor(ctx, &currentGroup); err != nil {
+						logging.Warnf("Warning: failed to update group %s: %v", gcfg.Name, err)
+					} else {
+						logging.Infof("Updated group %s", gcfg.Name)
+					}
 				}
 			}
+		} else {
+			// Create new group
+			group := &monitor.Group{
+				Base: monitor.Base{
+					Name:            gcfg.Name,
+					Description:     gcfg.Description,
+					NotificationIDs: groupNotificationIDs,
+					Interval:        int64(cfg.Interval),
+					MaxRetries:      int64(cfg.MaxRetries),
+					IsActive:        true,
+				},
+			}
+			id, err := client.CreateMonitor(ctx, group)
+			if err != nil {
+				return fmt.Errorf("create group %s: %w", gcfg.Name, err)
+			}
+			groupNameToID[gcfg.Name] = id
+			logging.Infof("Created group: %s (ID: %d)", gcfg.Name, id)
 		}
-	} else {
-		// === CREATE NEW GROUP ===
-		group := &monitor.Group{
-			Base: monitor.Base{
-				Name:            cfg.GroupName,
-				Description:     cfg.GroupDescription,
-				NotificationIDs: groupNotificationIDs,
-				Interval:        int64(cfg.Interval),
-				MaxRetries:      int64(cfg.MaxRetries),
-				IsActive:        true,
-			},
-		}
-		id, err := client.CreateMonitor(ctx, group)
-		if err != nil {
-			return fmt.Errorf("create group: %w", err)
-		}
-		groupID = id
-		log.Printf("Created group: %s (ID: %d)", cfg.GroupName, groupID)
 	}
-
-	parent := &groupID
 
 	// Track if config was updated with new tokens
 	configUpdated := false
 
-	for i := range cfg.Monitors {
-		mcfg := &cfg.Monitors[i]
-		if existing, exists := existingByName[mcfg.Name]; exists && existing.Parent != nil && *existing.Parent == groupID {
-			log.Printf("Monitor exists: %s (ID: %d)", mcfg.Name, existing.GetID())
+	// Process push monitors first to update tokens
+	for i := range cfg.PushMonitors {
+		mcfg := &cfg.PushMonitors[i]
+		mcfg.Type = "push" // Ensure type is set
+		mcfg.ResolveMetrics(cfg)
 
-			// Always try to fetch the push token for push monitors
-			if mcfg.Type == "push" {
-				var push monitor.Push
-				if err := client.GetMonitorAs(ctx, existing.GetID(), &push); err == nil {
-					if push.PushDetails.PushToken != "" && mcfg.PushToken != push.PushDetails.PushToken {
-						mcfg.PushToken = push.PushDetails.PushToken
-						configUpdated = true
-						log.Printf("Fetched and updated push token for existing monitor %s", mcfg.Name)
-					}
-				} else {
-					log.Printf("Failed to fetch token for existing monitor %s: %v", mcfg.Name, err)
+		// Check if this monitor exists
+		var existing monitor.Base
+		var exists bool
+
+		if mcfg.Group != "" {
+			// Monitor has a group - lookup by name + group ID
+			if groupID, groupExists := groupNameToID[mcfg.Group]; groupExists {
+				groupKey := fmt.Sprintf("%s|%d", mcfg.Name, groupID)
+				existing, exists = existingByNameAndGroup[groupKey]
+				if exists {
+					logging.Infof("Grouped push monitor exists: %s (group: %s, ID: %d)", mcfg.Name, mcfg.Group, existing.GetID())
 				}
+			} else {
+				logging.Warnf("Push monitor %s specifies unknown group %q - treating as ungrouped", mcfg.Name, mcfg.Group)
+				// Fall back to name-only lookup for unknown groups
+				existing, exists = existingByName[mcfg.Name]
+			}
+		} else {
+			// Monitor has no group - lookup by name only (can be overwritten)
+			existing, exists = existingByName[mcfg.Name]
+			if exists {
+				logging.Infof("Ungrouped push monitor exists: %s (ID: %d) - will be updated/overwritten", mcfg.Name, existing.GetID())
+			}
+		}
+
+		if exists {
+			// Fetch the push token for existing monitors
+			var push monitor.Push
+			if err := client.GetMonitorAs(ctx, existing.GetID(), &push); err == nil {
+				if push.PushDetails.PushToken != "" && mcfg.PushToken != push.PushDetails.PushToken {
+					mcfg.PushToken = push.PushDetails.PushToken
+					configUpdated = true
+					logging.Infof("Fetched and updated push token for existing monitor %s", mcfg.Name)
+				}
+			} else {
+				logging.Errorf("Failed to fetch token for existing monitor %s: %v", mcfg.Name, err)
 			}
 
 			// Resolve target notifications
@@ -267,23 +300,22 @@ func ProvisionKumaMonitor(ctx context.Context, client *kuma.Client, cfg *config.
 			if len(mcfg.NotificationNames) > 0 {
 				ids, err := ResolveNotificationIDs(ctx, client, mcfg.NotificationNames)
 				if err != nil {
-					log.Printf("Warning: failed to resolve notifications for %s: %v", mcfg.Name, err)
+					logging.Warnf("Warning: failed to resolve notifications for %s: %v", mcfg.Name, err)
 				} else {
 					targetIDs = ids
 				}
 			}
 
-			// Update description + notifications (works for ALL types)
+			// Update description + notifications
 			if err := UpdateMonitorBase(ctx, client, existing.GetID(), mcfg, targetIDs); err != nil {
-				log.Printf("Warning: failed to update monitor %s: %v", mcfg.Name, err)
+				logging.Warnf("Warning: failed to update monitor %s: %v", mcfg.Name, err)
 			}
 
 			continue // skip creation
 		}
 
+		// Create new push monitor
 		notificationIDs := []int64{}
-
-		// Monitor-specific override
 		if len(mcfg.NotificationNames) > 0 {
 			ids, err := ResolveNotificationIDs(ctx, client, mcfg.NotificationNames)
 			if err != nil {
@@ -292,7 +324,228 @@ func ProvisionKumaMonitor(ctx context.Context, client *kuma.Client, cfg *config.
 			notificationIDs = ids
 		}
 
-		// New monitor creation
+		// Determine parent group ID
+		var parent *int64
+		if mcfg.Group != "" {
+			if groupID, exists := groupNameToID[mcfg.Group]; exists {
+				parent = &groupID
+			} else {
+				logging.Warnf("Push monitor %s specifies unknown group %q", mcfg.Name, mcfg.Group)
+			}
+		} else if len(cfg.Groups) > 0 {
+			// Default to first group if no group specified
+			if groupID, exists := groupNameToID[cfg.Groups[0].Name]; exists {
+				parent = &groupID
+				logging.Debugf("Push monitor %s defaults to first group %q (ID: %d)", mcfg.Name, cfg.Groups[0].Name, *parent)
+			}
+		}
+
+		// Generate unique token
+		customToken, err := GeneratePushToken()
+		if err != nil {
+			return fmt.Errorf("failed to generate push token: %w", err)
+		}
+		logging.Debugf("Generated custom push token for '%s': %s", mcfg.Name, customToken)
+
+		pushMon := &monitor.Push{
+			Base: monitor.Base{
+				Name:            mcfg.Name,
+				Description:     mcfg.Description,
+				NotificationIDs: notificationIDs,
+				Interval:        int64(cfg.Interval),
+				MaxRetries:      int64(cfg.MaxRetries),
+				IsActive:        true,
+				Parent:          parent,
+			},
+			PushDetails: monitor.PushDetails{
+				PushToken: customToken,
+			},
+		}
+
+		id, err := client.CreateMonitor(ctx, pushMon)
+		if err != nil {
+			return fmt.Errorf("create push monitor %s: %w", mcfg.Name, err)
+		}
+
+		// Fetch the actual token from the created monitor
+		if err := client.GetMonitorAs(ctx, id, &pushMon); err == nil {
+			if pushMon.PushDetails.PushToken != "" {
+				mcfg.PushToken = pushMon.PushDetails.PushToken
+				configUpdated = true
+				logging.Debugf("Fetched push token for new monitor %s: %s", mcfg.Name, mcfg.PushToken)
+			} else {
+				logging.Warnf("New push monitor %s created but token empty", mcfg.Name)
+			}
+		} else {
+			logging.Errorf("Failed to fetch token for new monitor %s: %v", mcfg.Name, err)
+		}
+
+		logging.Infof("Created push monitor: %s (ID: %d)", mcfg.Name, id)
+	}
+
+	// Process HTTP monitors
+	for i := range cfg.HTTPMonitors {
+		mcfg := &cfg.HTTPMonitors[i]
+		mcfg.Type = "http" // Ensure type is set
+		mcfg.ResolveMetrics(cfg)
+
+		// Check if this monitor exists
+		var existing monitor.Base
+		var exists bool
+
+		if mcfg.Group != "" {
+			// Monitor has a group - lookup by name + group ID
+			if groupID, groupExists := groupNameToID[mcfg.Group]; groupExists {
+				groupKey := fmt.Sprintf("%s|%d", mcfg.Name, groupID)
+				existing, exists = existingByNameAndGroup[groupKey]
+				if exists {
+					logging.Infof("Grouped HTTP monitor exists: %s (group: %s, ID: %d)", mcfg.Name, mcfg.Group, existing.GetID())
+				}
+			} else {
+				logging.Warnf("HTTP monitor %s specifies unknown group %q - treating as ungrouped", mcfg.Name, mcfg.Group)
+				// Fall back to name-only lookup for unknown groups
+				existing, exists = existingByName[mcfg.Name]
+			}
+		} else {
+			// Monitor has no group - lookup by name only (can be overwritten)
+			existing, exists = existingByName[mcfg.Name]
+			if exists {
+				logging.Infof("Ungrouped HTTP monitor exists: %s (ID: %d) - will be updated/overwritten", mcfg.Name, existing.GetID())
+			}
+		}
+
+		if exists {
+			// Resolve target notifications
+			targetIDs := []int64{}
+			if len(mcfg.NotificationNames) > 0 {
+				ids, err := ResolveNotificationIDs(ctx, client, mcfg.NotificationNames)
+				if err != nil {
+					logging.Warnf("Warning: failed to resolve notifications for %s: %v", mcfg.Name, err)
+				} else {
+					targetIDs = ids
+				}
+			}
+
+			// Update description + notifications
+			if err := UpdateMonitorBase(ctx, client, existing.GetID(), mcfg, targetIDs); err != nil {
+				logging.Warnf("Warning: failed to update monitor %s: %v", mcfg.Name, err)
+			}
+
+			continue // skip creation
+		}
+
+		// Create new HTTP monitor
+		if mcfg.URL == "" {
+			return fmt.Errorf("http monitor %s missing url", mcfg.Name)
+		}
+
+		notificationIDs := []int64{}
+		if len(mcfg.NotificationNames) > 0 {
+			ids, err := ResolveNotificationIDs(ctx, client, mcfg.NotificationNames)
+			if err != nil {
+				return err
+			}
+			notificationIDs = ids
+		}
+
+		// Determine parent group ID
+		var parent *int64
+		if mcfg.Group != "" {
+			if groupID, exists := groupNameToID[mcfg.Group]; exists {
+				parent = &groupID
+			} else {
+				logging.Warnf("HTTP monitor %s specifies unknown group %q", mcfg.Name, mcfg.Group)
+			}
+		} else if len(cfg.Groups) > 0 {
+			// Default to first group if no group specified
+			if groupID, exists := groupNameToID[cfg.Groups[0].Name]; exists {
+				parent = &groupID
+				logging.Debugf("HTTP monitor %s defaults to first group %q (ID: %d)", mcfg.Name, cfg.Groups[0].Name, *parent)
+			}
+		}
+
+		httpMon := &monitor.HTTP{
+			Base: monitor.Base{
+				Name:            mcfg.Name,
+				Description:     mcfg.Description,
+				NotificationIDs: notificationIDs,
+				Interval:        int64(cfg.Interval),
+				MaxRetries:      int64(cfg.MaxRetries),
+				IsActive:        true,
+				Parent:          parent,
+			},
+			HTTPDetails: monitor.HTTPDetails{
+				URL:                 mcfg.URL,
+				Method:              "GET",
+				Body:                "",
+				HTTPBodyEncoding:    "text",
+				Headers:             "{}",
+				AcceptedStatusCodes: []string{"200-299"},
+				MaxRedirects:        10,
+				Timeout:             30,
+			},
+		}
+
+		id, err := client.CreateMonitor(ctx, httpMon)
+		if err != nil {
+			return fmt.Errorf("create http monitor %s: %w", mcfg.Name, err)
+		}
+
+		logging.Infof("Created HTTP monitor: %s (ID: %d)", mcfg.Name, id)
+	}
+
+	// Process legacy monitors (for backward compatibility)
+	for i := range cfg.Monitors {
+		mcfg := &cfg.Monitors[i]
+		mcfg.ResolveMetrics(cfg)
+
+		// Check if this monitor exists (legacy monitors don't have groups)
+		existing, exists := existingByName[mcfg.Name]
+		if exists {
+			logging.Infof("Legacy monitor exists: %s (ID: %d) - will be updated/overwritten", mcfg.Name, existing.GetID())
+
+			// Resolve target notifications
+			targetIDs := []int64{}
+			if len(mcfg.NotificationNames) > 0 {
+				ids, err := ResolveNotificationIDs(ctx, client, mcfg.NotificationNames)
+				if err != nil {
+					logging.Warnf("Warning: failed to resolve notifications for %s: %v", mcfg.Name, err)
+				} else {
+					targetIDs = ids
+				}
+			}
+
+			// Update description + notifications
+			if err := UpdateMonitorBase(ctx, client, existing.GetID(), mcfg, targetIDs); err != nil {
+				logging.Warnf("Warning: failed to update monitor %s: %v", mcfg.Name, err)
+			}
+
+			continue // skip creation
+		}
+
+		// Create new legacy monitor
+		if mcfg.URL == "" && mcfg.Type == "http" {
+			return fmt.Errorf("legacy http monitor %s missing url", mcfg.Name)
+		}
+
+		notificationIDs := []int64{}
+		if len(mcfg.NotificationNames) > 0 {
+			ids, err := ResolveNotificationIDs(ctx, client, mcfg.NotificationNames)
+			if err != nil {
+				return err
+			}
+			notificationIDs = ids
+		}
+
+		// Legacy monitors default to first group
+		var parent *int64
+		if len(cfg.Groups) > 0 {
+			if groupID, exists := groupNameToID[cfg.Groups[0].Name]; exists {
+				parent = &groupID
+				logging.Debugf("Legacy monitor %s defaults to first group %q (ID: %d)", mcfg.Name, cfg.Groups[0].Name, *parent)
+			}
+		}
+
 		base := monitor.Base{
 			Name:            mcfg.Name,
 			Description:     mcfg.Description,
@@ -306,27 +559,21 @@ func ProvisionKumaMonitor(ctx context.Context, client *kuma.Client, cfg *config.
 		var mon monitor.Monitor
 		switch mcfg.Type {
 		case "push":
-			// Generate unique token in code
 			customToken, err := GeneratePushToken()
 			if err != nil {
 				return fmt.Errorf("failed to generate push token: %w", err)
 			}
-			log.Printf("Generated custom push token for '%s': %s", mcfg.Name, customToken)
+			logging.Debugf("Generated custom push token for legacy '%s': %s", mcfg.Name, customToken)
 
-			displayName := mcfg.Name
-			base.Name = displayName
 			pushMon := &monitor.Push{
 				Base: base,
 				PushDetails: monitor.PushDetails{
-					PushToken: customToken, // This is the key line!
+					PushToken: customToken,
 				},
 			}
 			mon = pushMon
 		case "http":
-			if mcfg.URL == "" {
-				return fmt.Errorf("http monitor %s missing url", mcfg.Name)
-			}
-			mon = &monitor.HTTP{
+			httpMon := &monitor.HTTP{
 				Base: base,
 				HTTPDetails: monitor.HTTPDetails{
 					URL:                 mcfg.URL,
@@ -339,13 +586,14 @@ func ProvisionKumaMonitor(ctx context.Context, client *kuma.Client, cfg *config.
 					Timeout:             30,
 				},
 			}
+			mon = httpMon
 		default:
-			return fmt.Errorf("unsupported type: %s", mcfg.Type)
+			return fmt.Errorf("unsupported legacy type: %s", mcfg.Type)
 		}
 
 		id, err := client.CreateMonitor(ctx, mon)
 		if err != nil {
-			return fmt.Errorf("create %s monitor %s: %w", mcfg.Type, mcfg.Name, err)
+			return fmt.Errorf("create legacy %s monitor %s: %w", mcfg.Type, mcfg.Name, err)
 		}
 
 		// Fetch token for newly created push monitor
@@ -355,24 +603,24 @@ func ProvisionKumaMonitor(ctx context.Context, client *kuma.Client, cfg *config.
 				if push.PushDetails.PushToken != "" {
 					mcfg.PushToken = push.PushDetails.PushToken
 					configUpdated = true
-					log.Printf("Fetched push token for new monitor %s: %s", mcfg.Name, mcfg.PushToken)
+					logging.Debugf("Fetched push token for legacy monitor %s: %s", mcfg.Name, mcfg.PushToken)
 				} else {
-					log.Printf("New push monitor %s created but token empty", mcfg.Name)
+					logging.Warnf("New legacy push monitor %s created but token empty", mcfg.Name)
 				}
 			} else {
-				log.Printf("Failed to fetch token for new monitor %s: %v", mcfg.Name, err)
+				logging.Errorf("Failed to fetch token for legacy monitor %s: %v", mcfg.Name, err)
 			}
 		}
 
-		log.Printf("Created %s monitor: %s (ID: %d)", mcfg.Type, mcfg.Name, id)
+		logging.Infof("Created legacy %s monitor: %s (ID: %d)", mcfg.Type, mcfg.Name, id)
 	}
 
 	// Always save config if tokens were updated
 	if configUpdated {
 		if err := config.SaveConfig("/config/config.yaml", cfg); err != nil {
-			log.Printf("Warning: failed to save updated config with tokens: %v", err)
+			logging.Warnf("Warning: failed to save updated config with tokens: %v", err)
 		} else {
-			log.Println("Saved updated config with push tokens")
+			logging.Info("Saved updated config with push tokens")
 		}
 	}
 

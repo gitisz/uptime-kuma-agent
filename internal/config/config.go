@@ -10,27 +10,56 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type LoggingConfig struct {
+	Level                string `yaml:"level,omitempty"`                  // debug, info, warn, error
+	Format               string `yaml:"format,omitempty"`                 // text, json
+	InternalLogDirectory string `yaml:"internal_log_directory,omitempty"` // internal directory for logs and Docker volume mounts
+	HostLogDirectory     string `yaml:"host_log_directory,omitempty"`     // host directory for Docker volume mounts
+	MaxSize              int    `yaml:"max_size,omitempty"`               // max size in MB before rotation
+	MaxAge               int    `yaml:"max_age,omitempty"`                // max age in days
+	MaxBackups           int    `yaml:"max_backups,omitempty"`            // max number of backup files
+	Compress             *bool  `yaml:"compress,omitempty"`               // compress rotated files
+	SocketIOLogLevel     string `yaml:"socketio_log_level,omitempty"`     // debug, info, warn, error, off
+}
+
+type ThresholdConfig struct {
+	CPU  float64 `yaml:"cpu,omitempty"`
+	RAM  float64 `yaml:"ram,omitempty"`
+	Disk float64 `yaml:"disk,omitempty"`
+}
+
 type AgentConfig struct {
-	UseOutputsDiscard *bool  `yaml:"use_outputs_discard,omitempty"`
-	DockerImage       string `yaml:"docker_image"`
+	UseOutputsDiscard *bool         `yaml:"use_outputs_discard,omitempty"`
+	DockerImage       string        `yaml:"docker_image"`
+	Logging           LoggingConfig `yaml:"logging,omitempty"`
+}
+
+type GroupConfig struct {
+	Name              string   `yaml:"name"`
+	Description       *string  `yaml:"description,omitempty"`
+	NotificationNames []string `yaml:"notification_names,omitempty"`
 }
 
 type Config struct {
-	UptimeKumaURL          string          `yaml:"uptime_kuma_url"`
-	Username               string          `yaml:"username"`
-	Password               string          `yaml:"password"`
-	GroupName              string          `yaml:"group_name"`
-	GroupDescription       *string         `yaml:"group_description,omitempty"`
-	GroupNotificationNames []string        `yaml:"group_notification_names,omitempty"`
-	Interval               int             `yaml:"interval"`
-	MaxRetries             int             `yaml:"max_retries"`
-	Agent                  AgentConfig     `yaml:"agent,omitempty"`
-	Monitors               []MonitorConfig `yaml:"monitors"`
+	Version          string          `yaml:"version,omitempty"`
+	UptimeKumaURL    string          `yaml:"uptime_kuma_url"`
+	Username         string          `yaml:"username"`
+	Password         string          `yaml:"password"`
+	Groups           []GroupConfig   `yaml:"groups"`
+	Interval         int             `yaml:"interval"`
+	MaxRetries       int             `yaml:"max_retries"`
+	GlobalThresholds ThresholdConfig `yaml:"global_thresholds,omitempty"`
+	Agent            AgentConfig     `yaml:"agent,omitempty"`
+	PushMonitors     []MonitorConfig `yaml:"push_monitors,omitempty"`
+	HTTPMonitors     []MonitorConfig `yaml:"http_monitors,omitempty"`
+	// Deprecated: Use PushMonitors and HTTPMonitors instead
+	Monitors []MonitorConfig `yaml:"monitors,omitempty"`
 }
 
 type MonitorConfig struct {
 	Type              string   `yaml:"type"`
 	Name              string   `yaml:"name"`
+	Group             string   `yaml:"group,omitempty"`
 	Description       *string  `yaml:"description,omitempty"`
 	NotificationNames []string `yaml:"notification_names,omitempty"`
 	URL               string   `yaml:"url,omitempty"`
@@ -91,15 +120,6 @@ func mergeConfigs(base, add Config) Config {
 	if add.Password != "" {
 		base.Password = add.Password
 	}
-	if add.GroupName != "" {
-		base.GroupName = add.GroupName
-	}
-	if add.GroupDescription != nil {
-		base.GroupDescription = add.GroupDescription
-	}
-	if len(add.GroupNotificationNames) > 0 {
-		base.GroupNotificationNames = append(base.GroupNotificationNames, add.GroupNotificationNames...)
-	}
 	if add.Interval > 0 {
 		base.Interval = add.Interval
 	}
@@ -115,13 +135,76 @@ func mergeConfigs(base, add Config) Config {
 		base.Agent.DockerImage = add.Agent.DockerImage
 	}
 
-	// Append Monitors
-	base.Monitors = append(base.Monitors, add.Monitors...)
+	// Merge GlobalThresholds (last config wins)
+	if add.GlobalThresholds.CPU > 0 {
+		base.GlobalThresholds.CPU = add.GlobalThresholds.CPU
+	}
+	if add.GlobalThresholds.RAM > 0 {
+		base.GlobalThresholds.RAM = add.GlobalThresholds.RAM
+	}
+	if add.GlobalThresholds.Disk > 0 {
+		base.GlobalThresholds.Disk = add.GlobalThresholds.Disk
+	}
+
+	// Merge Groups (avoid duplicates by name)
+	groupNameMap := make(map[string]bool)
+	for _, g := range base.Groups {
+		groupNameMap[g.Name] = true
+	}
+	for _, g := range add.Groups {
+		if !groupNameMap[g.Name] {
+			base.Groups = append(base.Groups, g)
+			groupNameMap[g.Name] = true
+		}
+	}
+
+	// Merge PushMonitors (avoid duplicates by name + group)
+	pushMonitorMap := make(map[string]bool)
+	for _, m := range base.PushMonitors {
+		key := m.Name + "|" + m.Group
+		pushMonitorMap[key] = true
+	}
+	for _, m := range add.PushMonitors {
+		key := m.Name + "|" + m.Group
+		if !pushMonitorMap[key] {
+			base.PushMonitors = append(base.PushMonitors, m)
+			pushMonitorMap[key] = true
+		}
+	}
+
+	// Merge HTTPMonitors (avoid duplicates by name + group)
+	httpMonitorMap := make(map[string]bool)
+	for _, m := range base.HTTPMonitors {
+		key := m.Name + "|" + m.Group
+		httpMonitorMap[key] = true
+	}
+	for _, m := range add.HTTPMonitors {
+		key := m.Name + "|" + m.Group
+		if !httpMonitorMap[key] {
+			base.HTTPMonitors = append(base.HTTPMonitors, m)
+			httpMonitorMap[key] = true
+		}
+	}
+
+	// Merge legacy Monitors (avoid duplicates by name)
+	monitorMap := make(map[string]bool)
+	for _, m := range base.Monitors {
+		monitorMap[m.Name] = true
+	}
+	for _, m := range add.Monitors {
+		if !monitorMap[m.Name] {
+			base.Monitors = append(base.Monitors, m)
+			monitorMap[m.Name] = true
+		}
+	}
 
 	return base
 }
 
 func SaveConfig(configPath string, cfg *Config) error {
+	// Deduplicate monitors before saving to prevent accumulation of duplicates
+	cfg.deduplicateMonitors()
+
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
@@ -129,7 +212,45 @@ func SaveConfig(configPath string, cfg *Config) error {
 	return os.WriteFile(configPath, data, 0o644)
 }
 
-func (m *MonitorConfig) ResolveMetrics() {
+// deduplicateMonitors removes duplicate monitors from the config
+func (c *Config) deduplicateMonitors() {
+	// Deduplicate PushMonitors
+	pushMonitorMap := make(map[string]bool)
+	var deduplicatedPush []MonitorConfig
+	for _, m := range c.PushMonitors {
+		key := m.Name + "|" + m.Group
+		if !pushMonitorMap[key] {
+			deduplicatedPush = append(deduplicatedPush, m)
+			pushMonitorMap[key] = true
+		}
+	}
+	c.PushMonitors = deduplicatedPush
+
+	// Deduplicate HTTPMonitors
+	httpMonitorMap := make(map[string]bool)
+	var deduplicatedHTTP []MonitorConfig
+	for _, m := range c.HTTPMonitors {
+		key := m.Name + "|" + m.Group
+		if !httpMonitorMap[key] {
+			deduplicatedHTTP = append(deduplicatedHTTP, m)
+			httpMonitorMap[key] = true
+		}
+	}
+	c.HTTPMonitors = deduplicatedHTTP
+
+	// Deduplicate legacy Monitors
+	monitorMap := make(map[string]bool)
+	var deduplicatedLegacy []MonitorConfig
+	for _, m := range c.Monitors {
+		if !monitorMap[m.Name] {
+			deduplicatedLegacy = append(deduplicatedLegacy, m)
+			monitorMap[m.Name] = true
+		}
+	}
+	c.Monitors = deduplicatedLegacy
+}
+
+func (m *MonitorConfig) ResolveMetrics(cfg *Config) {
 	lowerName := strings.ToLower(m.Name)
 
 	// Smart defaults if not explicitly set
@@ -160,8 +281,64 @@ func (m *MonitorConfig) ResolveMetrics() {
 		}
 	}
 
-	// Default threshold
+	// Default threshold from global_thresholds or fallback to 90
 	if m.Threshold == 0 {
-		m.Threshold = 90
+		switch m.Metric {
+		case "cpu", "docker_container_cpu":
+			if cfg.GlobalThresholds.CPU > 0 {
+				m.Threshold = cfg.GlobalThresholds.CPU
+			} else {
+				m.Threshold = 90
+			}
+		case "mem":
+			if cfg.GlobalThresholds.RAM > 0 {
+				m.Threshold = cfg.GlobalThresholds.RAM
+			} else {
+				m.Threshold = 90
+			}
+		case "disk":
+			if cfg.GlobalThresholds.Disk > 0 {
+				m.Threshold = cfg.GlobalThresholds.Disk
+			} else {
+				m.Threshold = 85
+			}
+		default:
+			m.Threshold = 90
+		}
+	}
+}
+
+// GetAllMonitors returns a consolidated list of all monitors (for backward compatibility)
+func (c *Config) GetAllMonitors() []MonitorConfig {
+	var all []MonitorConfig
+
+	// Add push monitors with type set
+	for _, m := range c.PushMonitors {
+		m.Type = "push"
+		all = append(all, m)
+	}
+
+	// Add HTTP monitors with type set
+	for _, m := range c.HTTPMonitors {
+		m.Type = "http"
+		all = append(all, m)
+	}
+
+	// Include deprecated Monitors for backward compatibility (they already have type set)
+	all = append(all, c.Monitors...)
+	return all
+}
+
+// ResolveAllMetrics sets smart defaults and thresholds for all monitors using global config
+func (c *Config) ResolveAllMetrics() {
+	allMonitors := c.GetAllMonitors()
+	for i := range allMonitors {
+		allMonitors[i].ResolveMetrics(c)
+	}
+	// Update the slices with resolved metrics
+	copy(c.PushMonitors, allMonitors[:len(c.PushMonitors)])
+	copy(c.HTTPMonitors, allMonitors[len(c.PushMonitors):len(c.PushMonitors)+len(c.HTTPMonitors)])
+	if len(c.Monitors) > 0 {
+		copy(c.Monitors, allMonitors[len(c.PushMonitors)+len(c.HTTPMonitors):])
 	}
 }
