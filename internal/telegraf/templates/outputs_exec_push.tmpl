@@ -1,3 +1,15 @@
+{{if and (hasPrefix .Metric "docker_container_") .ContainerName -}}
+############################################
+# Docker metric isolation (auto-generated)
+############################################
+[[processors.override]]
+  namepass = ["{{.Metric}}"]
+  tagpass = { container_name = ["{{.ContainerName}}"] }
+  name_override = "{{.Metric}}_{{sanitizeMetric .ContainerName}}"
+{{end -}}
+############################################
+# Push to Uptime Kuma
+############################################
 [[outputs.exec]]
   command = [
     "docker",
@@ -13,13 +25,14 @@
     "--token", "{{.Token}}"
   ]
 
+  {{if and (hasPrefix .Metric "docker_container_") .ContainerName -}}
+  namepass = ["{{.Metric}}_{{sanitizeMetric .ContainerName}}"]
+  {{else -}}
   namepass = ["{{.Metric}}"]
-  fieldpass = ["{{.Field}}"]
-{{if .Filesystem}}
+  {{end -}}
+  fieldinclude = ["{{.Field}}"]
+
+{{if .Filesystem -}}
   [outputs.exec.tagpass]
     path = ["{{.Filesystem}}"]
-{{end}}
-{{if .ContainerName}}
-  [[outputs.exec.tagpass]]
-    container_name = ["{{.ContainerName}}"]
-{{end}}
+{{end -}}

@@ -26,30 +26,41 @@ func GeneratePushToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func SanitizeFilename(name string) string {
+func SanitizeFilename(name string, delimiter string) string {
 	// 1. To lowercase
 	name = strings.ToLower(name)
 
-	// 2. Replace any sequence of invalid chars with a single hyphen
-	name = invalidChars.ReplaceAllString(name, "-")
+	// 2. Replace hyphens with delimiter (for metric names, we want underscores everywhere)
+	if delimiter == "_" {
+		name = strings.ReplaceAll(name, "-", delimiter)
+	}
 
-	// 3. Collapse multiple hyphens into one
-	name = multipleHyphens.ReplaceAllString(name, "-")
+	// 3. Replace any remaining invalid chars with delimiter
+	name = invalidChars.ReplaceAllString(name, delimiter)
 
-	// 4. Truncate to max length (before final trim)
+	// 4. Collapse multiple delimiters into one
+	var multipleDelimiters = regexp.MustCompile(delimiter + "+")
+	name = multipleDelimiters.ReplaceAllString(name, delimiter)
+
+	// 5. Truncate to max length (before final trim)
 	if len(name) > 50 {
 		name = name[:50]
 	}
 
-	// 5. Trim leading/trailing hyphens (NOT underscores!)
-	name = strings.Trim(name, "-")
+	// 6. Trim leading/trailing delimiters
+	name = strings.Trim(name, delimiter)
 
-	// 6. Fallback if name became empty
+	// 7. Fallback if name became empty
 	if name == "" {
 		name = "monitor"
 	}
 
 	return name
+}
+
+// Backward compatibility wrapper.
+func SanitizeFilenameHyphen(name string) string {
+	return SanitizeFilename(name, "-")
 }
 
 // Add this function anywhere in your file (e.g., near provisioning logic)
