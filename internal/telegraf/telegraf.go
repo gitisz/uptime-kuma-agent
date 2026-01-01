@@ -96,7 +96,21 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 			return fmt.Errorf("failed to read embedded template %s: %w", templatePath, err)
 		}
 
-		tmpl, err := template.New(filepath.Base(templatePath)).Parse(string(content))
+		// Create template with functions BEFORE parsing
+		tmpl := template.New(filepath.Base(templatePath)).Funcs(template.FuncMap{
+			"sanitize": func(s string) string {
+				return provision.SanitizeFilename(s, "-") // hyphens for filenames
+			},
+			"sanitizeMetric": func(s string) string {
+				return provision.SanitizeFilename(s, "_") // underscores for metric names
+			},
+			"hasPrefix": func(s, prefix string) bool {
+				return strings.HasPrefix(s, prefix)
+			},
+		})
+
+		// Now parse the template
+		tmpl, err = tmpl.Parse(string(content))
 		if err != nil {
 			return fmt.Errorf("failed to parse template %s: %w", templatePath, err)
 		}
@@ -190,7 +204,7 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 				uniqueName = m.Name
 			}
 
-			safeName := provision.SanitizeFilename(uniqueName)
+			safeName := provision.SanitizeFilename(uniqueName, "-")
 			filename := fmt.Sprintf("90-uptime-kuma-push-%s.conf", safeName)
 			path := filepath.Join(telegrafDir, filename)
 
