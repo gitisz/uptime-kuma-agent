@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,13 +11,14 @@ import (
 	"text/template"
 
 	"github.com/gitisz/uptime-kuma-agent/internal/config"
+	"github.com/gitisz/uptime-kuma-agent/internal/logging"
 )
 
 //go:embed templates/*.tmpl
 var templateFS embed.FS
 
 func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
-	log.Println("Starting Telegraf drop-in generation...")
+	logging.Info("Starting Telegraf drop-in generation...")
 
 	if err := os.MkdirAll(telegrafDir, 0755); err != nil {
 		return fmt.Errorf("failed to create telegraf directory %s: %w", telegrafDir, err)
@@ -33,9 +33,9 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 		name := entry.Name()
 		if strings.HasPrefix(name, "05-inputs-") && strings.HasSuffix(name, ".conf") {
 			if err := os.Remove(filepath.Join(telegrafDir, name)); err != nil {
-				log.Printf("Warning: failed to remove old input file %s: %v", name, err)
+				logging.Warnf("Warning: failed to remove old input file %s: %v", name, err)
 			} else {
-				log.Printf("Removed old input config: %s", name)
+				logging.Infof("Removed old input config: %s", name)
 			}
 		}
 	}
@@ -46,6 +46,7 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 		Threshold     float64
 		Token         string
 		Name          string
+		Group         string
 		Filesystem    string // only for disk
 		ContainerName string // only for docker
 	}
@@ -56,17 +57,14 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 	var diskMountPoints []string
 	diskSeen := make(map[string]bool)
 
-	for i := range cfg.Monitors {
-		m := &cfg.Monitors[i]
+	allMonitors := cfg.GetAllMonitors()
+	for i := range allMonitors {
+		m := &allMonitors[i]
 		if m.Type != "push" || m.Metric == "" || m.PushToken == "" {
 			continue
 		}
 
-		m.ResolveMetrics() // your existing logic to set defaults
-
-		if m.Threshold == 0 {
-			m.Threshold = 90.0
-		}
+		m.ResolveMetrics(cfg) // use global thresholds for defaults
 
 		neededMetrics[m.Metric] = true
 
@@ -75,6 +73,7 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 			Threshold:     m.Threshold,
 			Token:         m.PushToken,
 			Name:          m.Name,
+			Group:         m.Group,
 			Filesystem:    m.Filesystem,
 			ContainerName: m.ContainerName,
 		}
@@ -115,7 +114,7 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 			return fmt.Errorf("failed to write %s: %w", outputPath, err)
 		}
 
-		log.Printf("Generated: %s", outputPath)
+		logging.Infof("Generated: %s", outputPath)
 		return nil
 	}
 
@@ -185,24 +184,34 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 			filename := fmt.Sprintf("90-uptime-kuma-push-%s.conf", safeName)
 			path := filepath.Join(telegrafDir, filename)
 
+			// Determine log directories from logging config
+			hostLogDirectory := logging.GetHostLogDirectory(&cfg.Agent.Logging)
+			internalLogDirectory := logging.GetInternalLogDirectory(&cfg.Agent.Logging)
+
 			data := struct {
-				DockerImage   string
-				MonitorName   string
-				Token         string
-				Metric        string
-				Field         string
-				Threshold     float64
-				ContainerName string
-				Filesystem    string
+				DockerImage          string
+				MonitorName          string
+				Group                string
+				Token                string
+				Metric               string
+				Field                string
+				Threshold            float64
+				ContainerName        string
+				Filesystem           string
+				HostLogDirectory     string
+				InternalLogDirectory string
 			}{
-				DockerImage:   cfg.Agent.DockerImage,
-				MonitorName:   m.Name,
-				Token:         m.Token,
-				Metric:        metric,
-				Field:         m.Field,
-				Threshold:     m.Threshold,
-				ContainerName: m.ContainerName,
-				Filesystem:    m.Filesystem,
+				DockerImage:          cfg.Agent.DockerImage,
+				MonitorName:          m.Name,
+				Group:                m.Group,
+				Token:                m.Token,
+				Metric:               metric,
+				Field:                m.Field,
+				Threshold:            m.Threshold,
+				ContainerName:        m.ContainerName,
+				Filesystem:           m.Filesystem,
+				HostLogDirectory:     hostLogDirectory,
+				InternalLogDirectory: internalLogDirectory,
 			}
 
 			// You'll need this template too: templates/outputs_exec_push.tmpl
@@ -212,7 +221,7 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 		}
 	}
 
-	log.Printf("Telegraf generation complete: %d push monitor(s), inputs: cpu=%v mem=%v disk=%v, discard=%v",
+	logging.Infof("Telegraf generation complete: %d push monitor(s), inputs: cpu=%v mem=%v disk=%v, discard=%v",
 		pushCount,
 		neededMetrics["cpu"], neededMetrics["mem"], len(diskMountPoints) > 0,
 		useOutputsDiscard)

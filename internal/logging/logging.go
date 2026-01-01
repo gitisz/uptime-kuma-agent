@@ -2,6 +2,7 @@ package logging
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,18 @@ import (
 )
 
 var Logger *logrus.Logger
+
+// CustomFormatter formats logs like: 2025-09-14 10:22:41.812 - [DEBUG]: Running command...
+type CustomFormatter struct{}
+
+func (f *CustomFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	timestamp := entry.Time.UTC().Format("2006-01-02T15:04:05.000Z")
+	level := strings.ToUpper(entry.Level.String())
+	msg := entry.Message
+
+	// Format: 2025-12-31T12:00:48.123Z - [DEBUG]: Running command...
+	return []byte(fmt.Sprintf("%s - [%s]: %s\n", timestamp, level, msg)), nil
+}
 
 // Default values
 const (
@@ -29,8 +42,8 @@ const (
 func InitLogger(cfg *config.LoggingConfig) error {
 	Logger = logrus.New()
 
-	// Set log level with precedence: CLI flag > env var > config > default
-	level := getLogLevel()
+	// Set log level with precedence: env var > config > default
+	level := getLogLevel(cfg)
 	logLevel, err := logrus.ParseLevel(level)
 	if err != nil {
 		return fmt.Errorf("invalid log level '%s': %w", level, err)
@@ -38,21 +51,19 @@ func InitLogger(cfg *config.LoggingConfig) error {
 	Logger.SetLevel(logLevel)
 
 	// Set formatter
-	format := getLogFormat()
+	format := getLogFormat(cfg)
 	switch strings.ToLower(format) {
 	case "json":
 		Logger.SetFormatter(&logrus.JSONFormatter{
 			TimestampFormat: "2006-01-02T15:04:05Z07:00",
 		})
 	default:
-		Logger.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "2006-01-02T15:04:05Z07:00",
-		})
+		// Custom format: 2025-09-14 10:22:41.812 - [DEBUG]: Running command...
+		Logger.SetFormatter(&CustomFormatter{})
 	}
 
 	// Set output
-	logFile := getLogFile()
+	logFile := GetLogFile(cfg)
 	if logFile != "" {
 		// Ensure log directory exists
 		logDir := filepath.Dir(logFile)
@@ -60,92 +71,179 @@ func InitLogger(cfg *config.LoggingConfig) error {
 			return fmt.Errorf("failed to create log directory %s: %w", logDir, err)
 		}
 
-		// Configure log rotation
-		Logger.SetOutput(&lumberjack.Logger{
+		// Configure log rotation for our application logger
+		lumberjackLogger := &lumberjack.Logger{
 			Filename:   logFile,
-			MaxSize:    getMaxSize(),
-			MaxAge:     getMaxAge(),
-			MaxBackups: getMaxBackups(),
-			Compress:   getCompress(),
-		})
+			MaxSize:    getMaxSize(cfg),
+			MaxAge:     getMaxAge(cfg),
+			MaxBackups: getMaxBackups(cfg),
+			Compress:   getCompress(cfg),
+		}
+		Logger.SetOutput(lumberjackLogger)
+
+		// Configure GLOBAL logrus for external libraries (Socket.IO client)
+		logrus.SetOutput(lumberjackLogger)      // Same file!
+		logrus.SetLevel(logLevel)               // Same level
+		logrus.SetFormatter(&CustomFormatter{}) // Same format
+
+		// Configure standard Go logger for any libraries using log package
+		log.SetOutput(lumberjackLogger) // Redirect standard log to file too
 	} else {
 		// Log to stdout/stderr
 		Logger.SetOutput(os.Stdout)
+		// Global logrus also to stdout for external libraries
+		logrus.SetOutput(os.Stdout)
+		logrus.SetLevel(logLevel)
+		logrus.SetFormatter(&CustomFormatter{})
+		// Standard Go logger also to stdout
+		log.SetOutput(os.Stdout)
 	}
 
 	return nil
 }
 
-// Precedence functions (CLI flag > env var > config > default)
+// Precedence functions (env var > config > default)
 
-// getLogLevel returns log level with proper precedence
-func getLogLevel() string {
-	// CLI flag takes highest precedence
+// getLogLevel returns log level with proper precedence: env var > config > default
+func getLogLevel(cfg *config.LoggingConfig) string {
+	// Environment variable
 	if level := os.Getenv("UPTIME_KUMA_AGENT_LOG_LEVEL"); level != "" {
 		return level
 	}
-	// Then config
-	if Logger != nil && Logger.Level != 0 {
-		return Logger.Level.String()
+	// Config file value
+	if cfg != nil && cfg.Level != "" {
+		return cfg.Level
 	}
 	// Default
 	return DefaultLogLevel
 }
 
-// getLogFormat returns log format with proper precedence
-func getLogFormat() string {
+// getLogFormat returns log format with proper precedence: env var > config > default
+func getLogFormat(cfg *config.LoggingConfig) string {
+	// Environment variable
 	if format := os.Getenv("UPTIME_KUMA_AGENT_LOG_FORMAT"); format != "" {
 		return format
+	}
+	// Config file value
+	if cfg != nil && cfg.Format != "" {
+		return cfg.Format
 	}
 	return DefaultLogFormat
 }
 
-// getLogFile returns log file path with proper precedence
-func getLogFile() string {
+// GetLogFile returns log file path with proper precedence: env var > config > default
+func GetLogFile(cfg *config.LoggingConfig) string {
+	// Environment variable
 	if file := os.Getenv("UPTIME_KUMA_AGENT_LOG_FILE"); file != "" {
 		return file
+	}
+	// Config file value - use InternalLogDirectory + hardcoded filename
+	if cfg != nil && cfg.InternalLogDirectory != "" {
+		return filepath.Join(cfg.InternalLogDirectory, "app.log")
 	}
 	return DefaultLogFile
 }
 
-// getMaxSize returns max size with proper precedence
-func getMaxSize() int {
+// GetHostLogDirectory returns host log directory path with proper precedence: env var > config > default
+func GetHostLogDirectory(cfg *config.LoggingConfig) string {
+	// Environment variable
+	if dir := os.Getenv("UPTIME_KUMA_AGENT_HOST_LOG_DIRECTORY"); dir != "" {
+		return dir
+	}
+	// Config file value
+	if cfg != nil && cfg.HostLogDirectory != "" {
+		return cfg.HostLogDirectory
+	}
+	// Default to the directory of the default log file
+	return filepath.Dir(DefaultLogFile)
+}
+
+// GetInternalLogDirectory returns internal log directory path with proper precedence: env var > config > default
+func GetInternalLogDirectory(cfg *config.LoggingConfig) string {
+	// Environment variable
+	if dir := os.Getenv("UPTIME_KUMA_AGENT_INTERNAL_LOG_DIRECTORY"); dir != "" {
+		return dir
+	}
+	// Config file value
+	if cfg != nil && cfg.InternalLogDirectory != "" {
+		return cfg.InternalLogDirectory
+	}
+	// Default internal log directory
+	return "/app-logs"
+}
+
+// getMaxSize returns max size with proper precedence: env var > config > default
+func getMaxSize(cfg *config.LoggingConfig) int {
+	// Environment variable
 	if sizeStr := os.Getenv("UPTIME_KUMA_AGENT_LOG_MAX_SIZE"); sizeStr != "" {
 		if size, err := strconv.Atoi(sizeStr); err == nil {
 			return size
 		}
 	}
+	// Config file value
+	if cfg != nil && cfg.MaxSize > 0 {
+		return cfg.MaxSize
+	}
 	return DefaultMaxSize
 }
 
-// getMaxAge returns max age with proper precedence
-func getMaxAge() int {
+// getMaxAge returns max age with proper precedence: env var > config > default
+func getMaxAge(cfg *config.LoggingConfig) int {
+	// Environment variable
 	if ageStr := os.Getenv("UPTIME_KUMA_AGENT_LOG_MAX_AGE"); ageStr != "" {
 		if age, err := strconv.Atoi(ageStr); err == nil {
 			return age
 		}
 	}
+	// Config file value
+	if cfg != nil && cfg.MaxAge > 0 {
+		return cfg.MaxAge
+	}
 	return DefaultMaxAge
 }
 
-// getMaxBackups returns max backups with proper precedence
-func getMaxBackups() int {
+// getMaxBackups returns max backups with proper precedence: env var > config > default
+func getMaxBackups(cfg *config.LoggingConfig) int {
+	// Environment variable
 	if backupsStr := os.Getenv("UPTIME_KUMA_AGENT_LOG_MAX_BACKUPS"); backupsStr != "" {
 		if backups, err := strconv.Atoi(backupsStr); err == nil {
 			return backups
 		}
 	}
+	// Config file value
+	if cfg != nil && cfg.MaxBackups > 0 {
+		return cfg.MaxBackups
+	}
 	return DefaultMaxBackups
 }
 
-// getCompress returns compress setting with proper precedence
-func getCompress() bool {
+// getCompress returns compress setting with proper precedence: env var > config > default
+func getCompress(cfg *config.LoggingConfig) bool {
+	// Environment variable
 	if compressStr := os.Getenv("UPTIME_KUMA_AGENT_LOG_COMPRESS"); compressStr != "" {
 		if compress, err := strconv.ParseBool(compressStr); err == nil {
 			return compress
 		}
 	}
+	// Config file value
+	if cfg != nil && cfg.Compress != nil {
+		return *cfg.Compress
+	}
 	return DefaultCompress
+}
+
+// GetSocketIOLogLevel returns Socket.IO log level with proper precedence: env var > config > default
+func GetSocketIOLogLevel(cfg *config.LoggingConfig) string {
+	// Environment variable
+	if level := os.Getenv("UPTIME_KUMA_AGENT_SOCKETIO_LOG_LEVEL"); level != "" {
+		return level
+	}
+	// Config file value
+	if cfg != nil && cfg.SocketIOLogLevel != "" {
+		return cfg.SocketIOLogLevel
+	}
+	// Default: "warn" (to reduce Socket.IO connection noise)
+	return "warn"
 }
 
 // Convenience functions for logging

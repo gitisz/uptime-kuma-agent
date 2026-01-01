@@ -21,14 +21,16 @@ var pushMetricCmd = &cobra.Command{
 	Short: "One-shot push triggered by Telegraf outputs.exec",
 	Run: func(cmd *cobra.Command, args []string) {
 		monitorName := cmd.Flag("monitor").Value.String()
+		groupName := cmd.Flag("group").Value.String()
 		token := cmd.Flag("token").Value.String()
 
 		if monitorName == "" || token == "" {
-			logging.Fatalf("Missing required flags: monitor=%q token=%q", monitorName, token)
+			logging.Fatalf("Missing required flags: monitor=%q group=%q token=%q", monitorName, groupName, token)
 		}
 
 		logging.Info("=== push-metric STARTED (outputs.exec mode) ===")
 		logging.Infof("Monitor: %s", monitorName)
+		logging.Infof("Group: %s", groupName)
 		logging.Infof("Token: %s", token)
 		logging.Infof("Config path: %s", configPath)
 
@@ -41,18 +43,21 @@ var pushMetricCmd = &cobra.Command{
 		pushURL := fmt.Sprintf("%s/api/push/%s", strings.TrimSuffix(cfg.UptimeKumaURL, "/"), token)
 		logging.Infof("Push URL: %s", pushURL)
 
-		// Find threshold and field from config.yaml (single lookup)
+		// Find threshold and field from config.yaml using monitor name + group matching
 		threshold := 90.0
 		expectedField := ""
 
-		for _, m := range cfg.Monitors {
-			if m.Type == "push" && m.Name == monitorName {
+		logging.Debugf("Looking for monitor: name=%q, group=%q", monitorName, groupName)
+
+		for _, m := range cfg.GetAllMonitors() {
+			if m.Type == "push" && m.Name == monitorName && m.Group == groupName {
 				if m.Threshold > 0 {
 					threshold = m.Threshold
 				}
 				if m.Field != "" {
 					expectedField = m.Field
 				}
+				logging.Debugf("Found matching monitor: %s (group: %s, metric: %s)", m.Name, m.Group, m.Metric)
 				break
 			}
 		}
