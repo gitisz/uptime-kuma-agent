@@ -12,6 +12,7 @@ import (
 
 	"github.com/gitisz/uptime-kuma-agent/internal/config"
 	"github.com/gitisz/uptime-kuma-agent/internal/logging"
+	"github.com/gitisz/uptime-kuma-agent/internal/provision"
 )
 
 //go:embed templates/*.tmpl
@@ -180,7 +181,16 @@ func GenerateTelegrafConfigs(cfg *config.Config, telegrafDir string) error {
 		for _, m := range monitors {
 			pushCount++
 
-			safeName := strings.ToLower(strings.ReplaceAll(m.Name, " ", "-"))
+			// Create unique filename using monitor name and group (if present)
+			// Use proper sanitization to handle special characters
+			var uniqueName string
+			if m.Group != "" {
+				uniqueName = fmt.Sprintf("%s-%s", m.Name, m.Group)
+			} else {
+				uniqueName = m.Name
+			}
+
+			safeName := provision.SanitizeFilename(uniqueName)
 			filename := fmt.Sprintf("90-uptime-kuma-push-%s.conf", safeName)
 			path := filepath.Join(telegrafDir, filename)
 
