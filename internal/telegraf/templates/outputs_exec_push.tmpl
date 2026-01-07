@@ -1,11 +1,19 @@
 {{if and (hasPrefix .Metric "docker_container_") .ContainerName -}}
 ############################################
-# Docker metric isolation (auto-generated)
+# Docker metric isolation (auto-generated) - UPDATED
+# Uses clone + rename to preserve original metrics for InfluxDB
 ############################################
-[[processors.override]]
+[[processors.clone]]
   namepass = ["{{.Metric}}"]
   tagpass = { container_name = ["{{.ContainerName}}"] }
-  name_override = "{{.Metric}}_{{sanitizeMetric .ContainerName}}"
+  [processors.clone.tags]
+    uk_clone = "true"
+[[processors.rename]]
+  namepass = ["{{.Metric}}"]
+  tagpass = { uk_clone = ["true"] }
+  [[processors.rename.replace]]
+    measurement = "{{.Metric}}"
+    dest = "{{.Metric}}_{{sanitizeMetric .ContainerName}}"
 {{end -}}
 ############################################
 # Push to Uptime Kuma
@@ -27,6 +35,8 @@
 
   {{if and (hasPrefix .Metric "docker_container_") .ContainerName -}}
   namepass = ["{{.Metric}}_{{sanitizeMetric .ContainerName}}"]
+  tagpass = { uk_clone = ["true"] }
+  tagexclude = ["uk_clone"]
   {{else -}}
   namepass = ["{{.Metric}}"]
   {{end -}}
